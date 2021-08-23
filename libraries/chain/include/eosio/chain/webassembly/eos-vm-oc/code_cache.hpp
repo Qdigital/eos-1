@@ -36,13 +36,25 @@ using allocator_t = bip::rbtree_best_fit<bip::null_mutex_family, bip::offset_ptr
 
 struct config;
 
+struct code_cache_mapped_handle {
+   int fd = -1;
+   size_t map_size = 0; //the size one should mmap(), as a convenience to calling fstat(fd)
+};
+
 class code_cache_base {
    public:
       using code_finder = std::function<std::string_view(const eosio::chain::digest_type&, uint8_t)>;
       code_cache_base(const bfs::path data_dir, const eosvmoc::config& eosvmoc_config, code_finder db);
       ~code_cache_base();
 
-      const int& fd() const { return _cache_fd; }
+      //fd of code cache suitable for sending to out of process code manager
+      const int& cache_fd() const { return _cache_fd; }
+      //return a mmap()ing of the code cache (and the mapping size) suitable for execution
+      void cache_mapping_for_execution(const int prot_flags, uint8_t*& addr, size_t& map_size) const;
+
+      size_t number_entries() const {return _cache_index.size();}
+      //only known after completion of a compile
+      std::optional<size_t> free_bytes() const {return _last_known_free_bytes;}
 
       void free_code(const digest_type& code_id, const uint8_t& vm_version);
 
@@ -65,8 +77,16 @@ class code_cache_base {
 
       code_finder _db;
 
-      bfs::path _cache_file_path;
-      int _cache_fd;
+      //handle to the on-disk file
+      int _cache_file_fd;
+
+      //the file to map in, and properties of that mapping
+      int _cache_fd = -1;
+      size_t _mapped_size = 0;
+      bool _populate_on_map = false;
+      bool _mlock_map = false;
+
+      int _extra_mmap_flags = 0;
 
       io_context _ctx;
       local::datagram_protocol::socket _compile_monitor_write_socket{_ctx};
@@ -80,8 +100,11 @@ class code_cache_base {
       size_t _free_bytes_eviction_threshold;
       void check_eviction_threshold(size_t free_bytes);
       void run_eviction_round();
+      std::optional<size_t> _last_known_free_bytes;
 
       void set_on_disk_region_dirty(bool);
+
+      int get_huge_memfd(size_t map_size, int memfd_flags) const;
 
       template <typename T>
       void serialize_cache_index(fc::datastream<T>& ds);
